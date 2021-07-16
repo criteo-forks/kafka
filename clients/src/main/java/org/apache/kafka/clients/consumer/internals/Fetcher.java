@@ -398,7 +398,7 @@ public class Fetcher<K, V> implements Closeable {
             timer.sleep(retryBackoffMs);
         } while (timer.notExpired());
 
-        throw new TimeoutException("Timeout expired while fetching topic metadata");
+        throw new TimeoutException("Timeout expired while fetching topic metadata for " + request.topics());
     }
 
     /**
@@ -410,6 +410,7 @@ public class Fetcher<K, V> implements Closeable {
         if (node == null)
             return RequestFuture.noBrokersAvailable();
         else
+            log.debug("Request topic metadata for " + request.topics() + " to broker " + node.id());
             return client.send(node, request);
     }
 
