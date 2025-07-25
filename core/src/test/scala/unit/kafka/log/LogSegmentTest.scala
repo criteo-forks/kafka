@@ -31,6 +31,7 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.CsvSource
 
 import java.io.File
+import java.nio.channels.ClosedChannelException
 import java.util
 import java.util.{Optional, OptionalLong}
 import scala.collection._
@@ -600,6 +601,45 @@ class LogSegmentTest {
     assertEquals(overflowBytesAppended, overflowSegment.size)
 
     Utils.delete(tempDir)
+  }
+
+  /**
+   * This test simulates a race condition the can occur during replica rebalancing
+   * where a log segment's file is deleted after an asynchronous flush
+   * has been scheduled but before it executes.
+   */
+  @Test
+  def testFlushOnClosedSegmentExceptionHandling(): Unit = {
+    // Create a LogSegment
+    val segment = createSegment(0)
+
+    // Write some data to it so the file is created, then flush it to disk
+    segment.append(0L, Time.SYSTEM.milliseconds(), 0L, TestUtils.singletonRecords("foo".getBytes()))
+    segment.flush()
+
+    val logFile = segment.log.file()
+    assertTrue(logFile.exists(), "Log file should exist after creation and flush")
+
+    // Simulate an unexpected I/O error by closing the channel
+    segment.log.channel.close()
+    assertFalse(segment.log.channel.isOpen, "The log's file channel should be closed")
+
+    // Calling flush() on the segment should throw a ClosedChannelException
+    assertThrows(classOf[ClosedChannelException], () => segment.flush(),
+      "A ClosedChannelException should have been thrown")
+
+    // Simulating the log file being deleted (occur during replica rebalancing)
+    java.nio.file.Files.delete(logFile.toPath)
+    assertFalse(logFile.exists(), "Log file should not exist after deletion")
+
+    // Call flush() directly on the segment.
+    // This should catch a CloseChannelException and return gracefully.
+    try {
+      segment.flush()
+    } catch {
+      case e: ClosedChannelException =>
+        fail("LogSegment.flush() should not have thrown a ClosedChannelException on a deleted file", e)
+    }
   }
 
   private def newProducerStateManager(): ProducerStateManager = {
