@@ -45,6 +45,7 @@ import java.io._
 import java.nio.file.Files
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap, Future}
 import java.util.{Collections, Optional, OptionalLong, Properties}
+import kafka.utils.Pool
 import org.apache.kafka.server.metrics.KafkaYammerMetrics
 import org.apache.kafka.server.util.{FileLock, KafkaScheduler, MockTime, Scheduler}
 import org.apache.kafka.storage.internals.log.{CleanerConfig, FetchDataInfo, FetchIsolation, LogConfig, LogDirFailureChannel, LogStartOffsetIncrementReason, ProducerStateManagerConfig, RemoteIndexCache}
@@ -1221,6 +1222,41 @@ class LogManagerTest {
     // When you checkpoint log-start-offset after removing the segments, then there should not be any checkpoint
     logManager.checkpointLogStartOffsets()
     assertEquals(-1L, checkpoint.read().getOrElse(topicPartition, -1L))
+  }
+
+  /**
+   * Test that replaceCurrentWithFutureLog does not close the source log, preventing race conditions
+   * where a concurrent read/flush could fail with ClosedChannelException.
+   */
+  @Test
+  def testReplaceCurrentWithFutureLogDoesNotCloseSourceLog(): Unit = {
+    val logDir1 = TestUtils.tempDir()
+    val logDir2 = TestUtils.tempDir()
+    logManager = createLogManager(Seq(logDir1, logDir2))
+    logManager.startup(Set.empty)
+
+    val topicName = "replace-log"
+    val tp = new TopicPartition(topicName, 0)
+    val currentLog = logManager.getOrCreateLog(tp, topicId = None)
+    // Create a future log in a different directory
+    logManager.maybeUpdatePreferredLogDir(tp, logDir2.getAbsolutePath)
+    logManager.getOrCreateLog(tp, isFuture = true, topicId = None)
+
+    // Spy on the source log to verify close() is not called
+    val spyCurrentLog = spy(currentLog)
+    // Inject the spy into the map
+    val field = classOf[LogManager].getDeclaredField("currentLogs")
+    field.setAccessible(true)
+    val currentLogs = field.get(logManager).asInstanceOf[Pool[TopicPartition, UnifiedLog]]
+    currentLogs.put(tp, spyCurrentLog)
+
+    logManager.replaceCurrentWithFutureLog(tp)
+
+    // Verify close() was NOT called on the source log
+    verify(spyCurrentLog, never()).close()
+
+    // Verify the source log was renamed to .delete
+    assertTrue(spyCurrentLog.dir.getName.endsWith(UnifiedLog.DeleteDirSuffix))
   }
 
   def writeMetaProperties(dir: File, directoryId: Optional[Uuid] = Optional.empty()): Unit = {
