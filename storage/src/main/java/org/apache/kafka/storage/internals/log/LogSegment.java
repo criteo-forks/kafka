@@ -20,7 +20,6 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ClosedChannelException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.attribute.FileTime;
@@ -625,24 +624,17 @@ public class LogSegment implements Closeable {
      */
     public void flush() throws IOException {
         try {
-            LOG_FLUSH_TIMER.time((Callable<Void>) () -> {
-                log.flush();
-                offsetIndex().flush();
-                timeIndex().flush();
-                txnIndex().flush();
-                return null;
+            LOG_FLUSH_TIMER.time(new Callable<Void>() {
+                // lambdas cannot declare a more specific exception type, so we use an anonymous inner class
+                @Override
+                public Void call() throws IOException {
+                    log.flush();
+                    offsetIndex().flush();
+                    timeIndex().flush();
+                    txnIndex.flush();
+                    return null;
+                }
             });
-        } catch (ClosedChannelException e) {
-            if (!log.file().exists()) {
-                // The log segment file has been moved/deleted
-                // as part of a replica movement, so this exception is safe to ignore.
-                LOGGER.warn("Caught a ClosedChannelException on a non-existent log segment file '{}'. " +
-                        "This is expected during a replica move and is safe to ignore.", log.file().getAbsolutePath());
-            } else {
-                // The file still exists, so this is an unexpected error.
-                // Re-throw it to trigger the normal failure handling.
-                throw e;
-            }
         } catch (Exception e) {
             if (e instanceof IOException)
                 throw (IOException) e;

@@ -1252,9 +1252,6 @@ class LogManager(logDirs: Seq[File],
     try {
       sourceLog.foreach { srcLog =>
         srcLog.renameDir(UnifiedLog.logDeleteDirName(topicPartition), shouldReinitialize = true)
-        // Now that replica in source log directory has been successfully renamed for deletion.
-        // Close the log, update checkpoint files, and enqueue this log to be deleted.
-        srcLog.close()
         val logDir = srcLog.parentDirFile
         val logsToCheckpoint = logsInDir(logDir)
         checkpointRecoveryOffsetsInDir(logDir, logsToCheckpoint)
